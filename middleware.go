@@ -1,27 +1,33 @@
 package realip
 
 import (
-	"strings"
+	"net"
 	"net/http"
+	"strings"
 )
 
 type Middleware struct {
 	header         string
-	trustedProxies []string
+	trustedProxies []*net.IPNet
 }
 
 func New(ip []string) *Middleware {
-	return &Middleware{
-		header: "X-Forwarded-For",
-		trustedProxies: ip,
-	}
+	return NewCustomHeader("X-Forwarded-For", ip)
 }
 
 func NewCustomHeader(h string, ip []string) *Middleware {
-	return &Middleware{
-		header: h,
-		trustedProxies: ip,
+	cidr := make([]*net.IPNet, len(ip))
+	for i, v := range ip {
+		if !strings.Contains(v, "/") {
+			v += "/32"
+		}
+		_, c, err := net.ParseCIDR(v)
+		if err != nil {
+			return nil
+		}
+		cidr[i] = c
 	}
+	return &Middleware{header: h, trustedProxies: cidr}
 }
 
 func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
@@ -32,16 +38,17 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next http
 	}
 
 	ip := strings.Split(r.RemoteAddr, ":")[0]
-	if checkIP(m.trustedProxies, ip) {
+	if m.checkIP(ip) {
 		r.RemoteAddr = strings.TrimSpace(strings.Split(h, ",")[0])
 	}
 
 	next(w, r)
 }
 
-func checkIP(p []string, ip string) bool {
-	for _, v := range p {
-		if v == ip {
+func (m *Middleware) checkIP(ip string) bool {
+	ip0 := net.ParseIP(ip)
+	for _, v := range m.trustedProxies {
+		if v.Contains(ip0) {
 			return true
 		}
 	}
